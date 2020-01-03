@@ -43,4 +43,4 @@ Re-run `benchopt sync-skills` after upgrading benchopt to update.
 Contributor-facing details (version placeholder, packaging globs, tests) are in
 `.agents/skills/benchopt-contributor/skills.md`.
 
-<!-- maintenance 2019 -->
+<!-- maintenance 2020 -->
