@@ -249,4 +249,4 @@ Available benchmarks
    :target: https://github.com/benchopt/benchmark_bilevel/actions
 .. |Build Status SLOPE| image:: https://github.com/benchopt/benchmark_slope/actions/workflows/ci.yml/badge.svg
    :target: https://github.com/benchopt/benchmark_slope/actions
-<!-- maintenance 2022 -->
+<!-- maintenance 2023 -->
