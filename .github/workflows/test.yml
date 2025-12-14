@@ -1,0 +1,232 @@
+name: test
+on:
+
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  create:
+    tags:
+      - '**'
+  schedule:
+    # Run every day at 8:42am UTC.
+    - cron:  '42 8 * * *'
+
+# Cancel in-progress workflows when pushing
+# a new commit on the same branch
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test_benchopt:
+    name: Test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            version_python: "3.10"
+            conda_cmd: 'mamba'
+            coverage: 'true'
+          - os: ubuntu-latest
+            version_python: "3.11"
+          - os: macos-latest
+            version_python: "3.10"
+          - os: windows-latest
+            version_python: "3.12"
+    env:
+      CONDA_ENV: 'testcondaenv'
+      VERSION_PYTHON: ${{ matrix.version_python }}
+      COVERAGE: ${{ matrix.coverage }}
+      BENCHOPT_CONDA_CMD: ${{ matrix.conda_cmd || (matrix.os == 'windows-latest' && 'call conda') || 'conda' }}
+
+    defaults:
+      run:
+        # Need to use this shell to get cond working properly.
+        # See https://github.com/marketplace/actions/setup-miniconda#important
+        shell: ${{ matrix.os == 'windows-latest' && 'cmd /C CALL {0}' || 'bash -l {0}' }}
+
+    steps:
+      - uses: actions/checkout@v7
+      - name: Setup Conda
+        uses: conda-incubator/setup-miniconda@v4
+        with:
+          activate-environment: ${{ env.CONDA_ENV }}
+          python-version: ${{ matrix.version_python }}
+          # Use miniforge to only get conda-forge as default channel.
+          miniforge-version: latest
+
+      - run: conda info
+
+      - name: Install benchopt and its dependencies on POSIX systems
+        if: matrix.os != 'windows-latest'
+        run: |
+          ${{ env.BENCHOPT_CONDA_CMD }} info
+          ${{ env.BENCHOPT_CONDA_CMD }} install -yq pip
+          pip install -e .[test,submitit,dask]
+
+      - name: Install benchopt and its dependencies on Windows
+        if: matrix.os == 'windows-latest'
+        run: |
+          ${{ env.BENCHOPT_CONDA_CMD }} info
+          ${{ env.BENCHOPT_CONDA_CMD }} install -yq pip
+          pip install -e ".[test]"
+
+      # TODO merge this with previous test if possible
+      #last command : Install mamba in base environment to make it accessible test env
+      - name: 'Install mamba in base environment'
+        if: matrix.os != 'windows-latest'
+        run: test $BENCHOPT_CONDA_CMD == "mamba" && conda install -n base mamba || echo "using conda"
+
+      - name: 'Run the tests on Ubuntu/OSX'
+        if: matrix.os != 'windows-latest'
+        run: continuous_integration/test_script.sh
+
+      - name: 'Run the tests on Windows'
+        if: matrix.os == 'windows-latest'
+        run: continuous_integration\test_script_windows.bat
+
+      - name: Upload coverage
+        if: ${{ matrix.coverage == 'true' }}
+        uses: codecov/codecov-action@v7
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+        with:
+          flags: test_benchopt
+          fail_ci_if_error: true
+          verbose: true
+
+  test_no_conda:
+    name: Test without conda
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            version_python: "3.10"
+          - os: macos-latest
+            version_python: "3.10"
+          - os: windows-latest
+            version_python: "3.12"
+    env:
+      VERSION_PYTHON: ${{ matrix.version_python }}
+
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.VERSION_PYTHON }}
+
+      - name: Install benchopt and its dependencies
+        run: pip install -e .
+
+      - name: Run benchopt run without conda
+        run: benchopt run examples/minimal_benchmark -r 1 -n 10 --no-plot
+
+  test_windows_bash:
+    # Regression test: when the CI step runs under bash, $SHELL is a git-bash
+    # path. benchopt must ignore it and drive conda through `cmd /c` rather than
+    # emitting a broken bash script, so `install`/`test` keep working.
+    name: Test Windows with bash shell
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash -el {0}
+
+    steps:
+      - uses: actions/checkout@v7
+      - name: Setup Conda
+        uses: conda-incubator/setup-miniconda@v4
+        with:
+          activate-environment: 'testcondaenv'
+          python-version: "3.12"
+          # Use miniforge to only get conda-forge as default channel.
+          miniforge-version: latest
+
+      - name: Show the shell benchopt sees
+        run: echo "SHELL=$SHELL"
+
+      - name: Install benchopt and its dependencies
+        run: pip install -e ".[test]"
+
+      - name: Create a conda env for the benchmark under bash
+        # Exercises create_conda_env / `CONDA_CMD env create` on Windows while
+        # $SHELL is a bash path.
+        run: benchopt install examples/minimal_benchmark --env-name bench_win_bash
+
+      - name: Run the benchmark in that env under bash
+        # Exercises `CALL conda activate` via _run_shell_in_conda_env.
+        run: >
+          benchopt run examples/minimal_benchmark
+          --env-name bench_win_bash -r 1 -n 10 --no-plot
+
+  test_no_pytest:
+    name: Test benchopt test without pytest installed
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+      - name: Setup Conda
+        uses: conda-incubator/setup-miniconda@v4
+        with:
+          activate-environment: 'testcondaenv'
+          python-version: 3.12
+          # Use miniforge to only get conda-forge as default channel.
+          miniforge-version: latest
+
+      - name: Install benchopt and its dependencies
+        run: pip install -e .
+
+      - name: Run benchopt test without pytest
+        run: benchopt test examples/minimal_benchmark --env-name test_benchopt --skip-install
+
+  test_benchopt_reqs:
+    name: Test benchopt requirements detection
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - version_python: "3.10"
+            version_pip: "21.3"
+          - version_python: "3.10"
+            version_pip: "22.2"
+          - version_python: "3.11"
+            version_pip: "latest"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.version_python }}
+      - name: Install specific version of pip
+        run: |
+          if [[ "${{ matrix.version_pip }}" != "latest" ]]
+          then
+              pip install pip==${{ matrix.version_pip }}
+          else
+              pip install -U pip
+          fi
+      - name: Test package installation detection
+        run: continuous_integration/test_req_detection.sh
+
+  report_test:
+    if: ${{ always() }}
+    needs: [test_benchopt, test_no_conda, test_windows_bash]
+    runs-on: ubuntu-latest
+    env:
+      TEST_BENCHOPT: ${{ needs.test_benchopt.result }}
+      TEST_NO_CONDA: ${{ needs.test_no_conda.result }}
+      TEST_WINDOWS_BASH: ${{ needs.test_windows_bash.result }}
+
+    steps:
+      - name: "Gather test results."
+        run: |
+          if [[ $TEST_BENCHOPT == 'success' && $TEST_NO_CONDA == 'success' \
+                && $TEST_WINDOWS_BASH == 'success' ]]; then
+            exit 0;
+          else
+            exit 1;
+          fi
+        shell: bash
